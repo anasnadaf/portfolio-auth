@@ -19,6 +19,11 @@ import (
 var (
 	db        *sql.DB
 	jwtSecret []byte
+	// Registration is closed unless explicitly opened. These are personal
+	// deployments fronting metered LLM APIs, so an open signup endpoint is a
+	// standing invitation to burn someone else's quota. Set
+	// ALLOW_REGISTRATION=true to create an account, then turn it back off.
+	allowRegistration bool
 )
 
 type credentials struct {
@@ -61,6 +66,10 @@ func parseCredentials(r *http.Request) (credentials, error) {
 }
 
 func register(w http.ResponseWriter, r *http.Request) {
+	if !allowRegistration {
+		writeError(w, http.StatusForbidden, "registration is closed")
+		return
+	}
 	c, err := parseCredentials(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -178,6 +187,7 @@ func main() {
 		log.Fatal("JWT_SECRET is required")
 	}
 	jwtSecret = []byte(secret)
+	allowRegistration = strings.EqualFold(os.Getenv("ALLOW_REGISTRATION"), "true")
 
 	var err error
 	db, err = sql.Open("postgres", dsn)
@@ -212,6 +222,6 @@ func main() {
 	mux.HandleFunc("GET /auth/health", health)
 
 	addr := ":8081"
-	log.Printf("auth service listening on %s", addr)
+	log.Printf("auth service listening on %s (registration open: %t)", addr, allowRegistration)
 	log.Fatal(http.ListenAndServe(addr, withCORS(mux)))
 }
