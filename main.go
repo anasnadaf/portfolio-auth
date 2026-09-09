@@ -1,7 +1,10 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log"
@@ -19,7 +22,18 @@ import (
 var (
 	db        *sql.DB
 	jwtSecret []byte
+	pepper    []byte
 )
+
+// pepperPassword applies an HMAC-SHA256 with the application pepper to the
+// raw password. The result is a fixed-length hex string that is then fed
+// into bcrypt. This means the pepper must be present to verify any hash —
+// a database leak alone is not enough to brute-force passwords.
+func pepperPassword(password string) string {
+	h := hmac.New(sha256.New, pepper)
+	h.Write([]byte(password))
+	return hex.EncodeToString(h.Sum(nil))
+}
 
 type credentials struct {
 	Email    string `json:"email"`
@@ -66,7 +80,7 @@ func register(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(c.Password), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(pepperPassword(c.Password)), bcrypt.DefaultCost)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "hashing failed")
 		return
@@ -103,7 +117,7 @@ func login(w http.ResponseWriter, r *http.Request) {
 		"SELECT password_hash FROM users WHERE email = $1", c.Email,
 	).Scan(&hash)
 	if err == sql.ErrNoRows ||
-		(err == nil && bcrypt.CompareHashAndPassword([]byte(hash), []byte(c.Password)) != nil) {
+		(err == nil && bcrypt.CompareHashAndPassword([]byte(hash), []byte(pepperPassword(c.Password))) != nil) {
 		writeError(w, http.StatusUnauthorized, "invalid email or password")
 		return
 	}
@@ -178,6 +192,12 @@ func main() {
 		log.Fatal("JWT_SECRET is required")
 	}
 	jwtSecret = []byte(secret)
+
+	pepperStr := os.Getenv("PEPPER_SECRET")
+	if pepperStr == "" {
+		log.Fatal("PEPPER_SECRET is required")
+	}
+	pepper = []byte(pepperStr)
 
 	var err error
 	db, err = sql.Open("postgres", dsn)
